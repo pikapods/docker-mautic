@@ -4,8 +4,11 @@ Single-container Mautic image. nginx + php-fpm + scheduler + Symfony
 Messenger workers, all supervised by s6 inside one container. All
 mutable state lives under `/data`.
 
-Derived from `serversideup/php:*-fpm-nginx-alpine` and modelled on
-[docker-freescout](https://github.com/pikapods/docker-freescout).
+Derived from `serversideup/php:*-fpm-nginx-alpine`.
+
+This image powers Mautic on [PikaPods](https://www.pikapods.com) and is
+maintained by the PikaPods team. It's published here for our users'
+reference and the benefit of the wider community.
 
 ## Quick start
 
