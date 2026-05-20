@@ -196,6 +196,10 @@ jobs:
       - name: Image + runtime tests
         env:
           IMAGE: mautic:test
+          MAUTIC_VERSION: ${{ needs.build.outputs.mautic_version }}
+          PHP_VERSION: ${{ needs.build.outputs.php_version }}
+          BASE_DIGEST: ${{ needs.build.outputs.base_digest }}
+          BASE_IMAGE: serversideup/php@${{ needs.build.outputs.base_digest }}
         run: pytest -v tests/ --junitxml=report.xml
 
       - name: Upload pytest report

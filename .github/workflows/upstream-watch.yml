@@ -44,11 +44,14 @@ jobs:
 
           # GET /releases/latest returns whichever release was *published most
           # recently by date* — which for Mautic can be an older major getting
-          # a patch. So list everything, drop drafts + pre-releases, pin to the
-          # major, and let `sort -V` pick the highest semver.
-          upstream=$(gh api repos/mautic/mautic/releases --paginate \
-            --jq '.[] | select(.draft==false and .prerelease==false) | .tag_name' \
-            | grep -E "^${MAJOR}\." | sort -V | tail -n1)
+          # a patch. So list everything, drop drafts + pre-releases (a gh failure
+          # here still aborts the step), then pin to the major below.
+          releases=$(gh api repos/mautic/mautic/releases --paginate \
+            --jq '.[] | select(.draft==false and .prerelease==false) | .tag_name')
+          # Pin to the major; `sort -V` picks the highest semver. `|| true` keeps
+          # an empty match from aborting under `set -o pipefail` (grep exits 1) so
+          # the no-op guard below is reachable when the major has no stable yet.
+          upstream=$(echo "${releases}" | grep -E "^${MAJOR}\." | sort -V | tail -n1 || true)
           if [ -z "${upstream}" ]; then
             echo "no stable release found in major ${MAJOR}; nothing to do"
             echo "rebuild=false" >>"$GITHUB_OUTPUT"
@@ -89,6 +92,24 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
+          # Dedupe: the watcher runs hourly, but a triggered build can take far
+          # longer to publish :<ver>. Without this, later ticks re-see the tag as
+          # absent and enqueue duplicate builds that republish as -r2+. If any
+          # build is still in flight we skip and re-evaluate next tick.
+          #
+          # --repo is required: this job has no actions/checkout, and gh resolves
+          # the repo from git context or GH_REPO — never GITHUB_REPOSITORY — so an
+          # unqualified `gh run list` errors with "failed to determine base repo".
+          # Count any non-`completed` run (covers queued/in_progress/pending/
+          # waiting/requested/action_required); over-counting only delays a tick.
+          active=$(gh run list --repo '${{ github.repository }}' --workflow build.yml \
+            --json status \
+            --jq '[.[] | select(.status != "completed")] | length')
+          if [ "${active}" -gt 0 ]; then
+            echo "a build.yml run is still in flight (${active}); skipping dispatch"
+            exit 0
+          fi
           gh workflow run build.yml \
             --repo '${{ github.repository }}' \
             -f mautic_version='${{ steps.check.outputs.upstream }}' \

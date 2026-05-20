@@ -251,13 +251,19 @@ class TestCustomUidRebuild:
     def image(self):
         ctx = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         tag = "mtc-uid1000-test"
-        r = subprocess.run(
-            ["docker", "build",
-             "--build-arg", f"WWW_DATA_UID={self.UID}",
-             "--build-arg", f"WWW_DATA_GID={self.GID}",
-             "-t", tag, ctx],
-            capture_output=True, text=True,
-        )
+        build_args = {"WWW_DATA_UID": self.UID, "WWW_DATA_GID": self.GID}
+        # CI may build a non-default Mautic version / digest-pinned base. Inherit
+        # those args (when present) so the UID rebuild exercises the same artifact
+        # as the candidate, not the Dockerfile's default 7.1.1 + floating base.
+        for key in ("MAUTIC_VERSION", "PHP_VERSION", "BASE_IMAGE", "BASE_DIGEST"):
+            val = os.environ.get(key)
+            if val:
+                build_args[key] = val
+        cmd = ["docker", "build"]
+        for k, v in build_args.items():
+            cmd += ["--build-arg", f"{k}={v}"]
+        cmd += ["-t", tag, ctx]
+        r = subprocess.run(cmd, capture_output=True, text=True)
         if r.returncode != 0:
             pytest.fail(
                 f"docker build failed (rc={r.returncode})\n"
