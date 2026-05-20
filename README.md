@@ -121,8 +121,6 @@ just work.
 
 ## Non-goals (this iteration)
 
-- pytest integration tests.
-- CI / GitHub Actions / digest pinning / multi-tag publishing.
 - Plugin/theme installation hooks beyond a passthrough directory.
 - Postgres support.
 - Version-migration / upgrade tooling.

@@ -1,0 +1,96 @@
+name: Upstream watch
+
+on:
+  schedule:
+    - cron: "18 * * * *"
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  PHP_VERSION: "8.3"
+  # Pinned upstream major line. Auto-rebuilds fire only for stable releases
+  # within this major, e.g. 7.1.0 -> 7.1.1 -> 7.2.0. Mautic maintains several
+  # majors in parallel (5.2.x, 6.0.x, 7.x ...); bump this manually to opt into
+  # a new major (e.g. "8"). Use workflow_dispatch on build.yml for one-off
+  # out-of-line builds.
+  MAJOR: "7"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+      packages: read
+    steps:
+      - uses: imjasonh/setup-crane@v0.4
+
+      # Decide whether to rebuild by reading the published image's labels.
+      # Triggers a rebuild when either:
+      #   * a newer stable Mautic release exists in the pinned major, or
+      #   * the base image (serversideup/php) digest has drifted from what
+      #     the published image was built against (security updates land here).
+      #
+      # PHP minor is an implementation detail — a PHP_VERSION bump in this
+      # workflow does NOT mass-rebuild existing releases. For a one-off
+      # rebuild against a new PHP, dispatch build.yml directly.
+      - name: Decide whether to rebuild
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # GET /releases/latest returns whichever release was *published most
+          # recently by date* — which for Mautic can be an older major getting
+          # a patch. So list everything, drop drafts + pre-releases, pin to the
+          # major, and let `sort -V` pick the highest semver.
+          upstream=$(gh api repos/mautic/mautic/releases --paginate \
+            --jq '.[] | select(.draft==false and .prerelease==false) | .tag_name' \
+            | grep -E "^${MAJOR}\." | sort -V | tail -n1)
+          if [ -z "${upstream}" ]; then
+            echo "no stable release found in major ${MAJOR}; nothing to do"
+            echo "rebuild=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "newest stable in major ${MAJOR}: ${upstream}"
+
+          current_base=$(crane digest "serversideup/php:${PHP_VERSION}-fpm-nginx-alpine")
+          echo "current base digest: ${current_base}"
+
+          # Read labels off the mutable <upstream> tag. Absent → first build
+          # of this version. Present → compare base.digest to detect drift.
+          cfg=$(crane config "${REGISTRY}/${IMAGE_NAME}:${upstream}" 2>/dev/null || true)
+          if [ -z "${cfg}" ]; then
+            echo "no published :${upstream} tag; will trigger first build"
+            echo "rebuild=true" >>"$GITHUB_OUTPUT"
+            echo "reason=new-version" >>"$GITHUB_OUTPUT"
+          else
+            published_base=$(echo "${cfg}" | jq -r '.config.Labels["org.opencontainers.image.base.digest"] // empty')
+            published_ver=$(echo "${cfg}" | jq -r '.config.Labels["org.opencontainers.image.version"] // empty')
+            echo "published version label: ${published_ver}"
+            echo "published base digest:   ${published_base}"
+            if [ "${published_base}" = "${current_base}" ]; then
+              echo "up to date (base digest matches); no rebuild"
+              echo "rebuild=false" >>"$GITHUB_OUTPUT"
+            else
+              echo "base digest drift detected; will trigger rebuild"
+              echo "rebuild=true" >>"$GITHUB_OUTPUT"
+              echo "reason=base-drift" >>"$GITHUB_OUTPUT"
+            fi
+          fi
+
+          echo "upstream=${upstream}" >>"$GITHUB_OUTPUT"
+          echo "base_digest=${current_base}" >>"$GITHUB_OUTPUT"
+
+      - name: Trigger build
+        if: steps.check.outputs.rebuild == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run build.yml \
+            --repo '${{ github.repository }}' \
+            -f mautic_version='${{ steps.check.outputs.upstream }}' \
+            -f php_version='${{ env.PHP_VERSION }}' \
+            -f base_digest='${{ steps.check.outputs.base_digest }}'

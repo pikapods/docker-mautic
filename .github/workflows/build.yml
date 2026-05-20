@@ -1,0 +1,262 @@
+name: Build and publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      mautic_version:
+        description: "Mautic version (e.g. 7.1.1)"
+        required: true
+        type: string
+      php_version:
+        description: "PHP minor version"
+        required: false
+        default: "8.3"
+        type: string
+      base_digest:
+        description: "Base image digest (sha256:...). Leave blank to resolve at build time."
+        required: false
+        default: ""
+        type: string
+      revision:
+        description: "Image revision (e.g. r1). Leave blank to compute from registry."
+        required: false
+        default: ""
+        type: string
+      publish:
+        description: "Publish to GHCR + Docker Hub after tests pass"
+        required: false
+        default: true
+        type: boolean
+  push:
+    tags:
+      - "v*"
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+# Serialize builds so revision computation (read :<ver> label → bump -rN)
+# can't race. We only ever build one version at a time in practice.
+concurrency:
+  group: build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      mautic_version: ${{ steps.vars.outputs.mautic_version }}
+      php_version: ${{ steps.vars.outputs.php_version }}
+      image_revision: ${{ steps.rev.outputs.revision }}
+      base_digest: ${{ steps.base.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Resolve build args
+        id: vars
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            MAUTIC_VER="${{ inputs.mautic_version }}"
+            PHP_VER="${{ inputs.php_version }}"
+          else
+            # Tag form: v<mautic-version> (e.g. v7.1.1). Mautic upstream tags
+            # have no 'v' prefix, but this packaging repo uses one to avoid
+            # colliding with upstream tag names in the same namespace.
+            MAUTIC_VER="${GITHUB_REF_NAME#v}"
+            PHP_VER="8.3"
+          fi
+          echo "mautic_version=$MAUTIC_VER" >>"$GITHUB_OUTPUT"
+          echo "php_version=$PHP_VER"       >>"$GITHUB_OUTPUT"
+
+      - uses: imjasonh/setup-crane@v0.4
+
+      # Pin the base image to a digest so the build is reproducible and the
+      # base.digest label reflects exactly what we built against. Caller can
+      # pass it in (the upstream-watch workflow does); otherwise resolve here.
+      - name: Resolve base image digest
+        id: base
+        env:
+          INPUT_DIGEST: ${{ inputs.base_digest }}
+          PHP_VER: ${{ steps.vars.outputs.php_version }}
+        run: |
+          set -euo pipefail
+          if [ -n "${INPUT_DIGEST:-}" ]; then
+            digest="${INPUT_DIGEST}"
+            echo "using digest from input: ${digest}"
+          else
+            digest=$(crane digest "serversideup/php:${PHP_VER}-fpm-nginx-alpine")
+            echo "resolved digest: ${digest}"
+          fi
+          echo "digest=${digest}" >>"$GITHUB_OUTPUT"
+
+      # Compute the next -rN by reading the version label off the mutable
+      # <MAUTIC_VER> tag. First build of a Mautic version → tag absent → r1.
+      # Existing tag → parse trailing -rN and bump. Caller can override via
+      # the `revision` input.
+      - name: Compute image revision
+        id: rev
+        env:
+          INPUT_REVISION: ${{ inputs.revision }}
+          MAUTIC_VER: ${{ steps.vars.outputs.mautic_version }}
+          REF: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        run: |
+          set -euo pipefail
+          if [ -n "${INPUT_REVISION:-}" ]; then
+            revision="${INPUT_REVISION}"
+            echo "using revision from input: ${revision}"
+          else
+            cfg=$(crane config "${REF}:${MAUTIC_VER}" 2>/dev/null || true)
+            if [ -z "${cfg}" ]; then
+              revision="r1"
+              echo "no existing :${MAUTIC_VER} tag; starting at r1"
+            else
+              prev=$(echo "${cfg}" | jq -r '.config.Labels["org.opencontainers.image.version"] // empty')
+              prev_rev="${prev##*-}"
+              case "${prev_rev}" in
+                r[0-9]*)
+                  next=$(( ${prev_rev#r} + 1 ))
+                  revision="r${next}"
+                  echo "previous label '${prev}' → next revision ${revision}"
+                  ;;
+                *)
+                  # Pre-revision-scheme image (label has no -rN suffix).
+                  revision="r1"
+                  echo "previous label '${prev}' has no -rN suffix; starting at r1"
+                  ;;
+              esac
+            fi
+          fi
+          echo "revision=${revision}" >>"$GITHUB_OUTPUT"
+
+      - name: Compute build date
+        id: meta
+        run: echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build image (local load)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          platforms: linux/amd64
+          build-args: |
+            MAUTIC_VERSION=${{ steps.vars.outputs.mautic_version }}
+            PHP_VERSION=${{ steps.vars.outputs.php_version }}
+            BASE_IMAGE=serversideup/php@${{ steps.base.outputs.digest }}
+            BASE_DIGEST=${{ steps.base.outputs.digest }}
+            IMAGE_REVISION=${{ steps.rev.outputs.revision }}
+            GIT_SHA=${{ github.sha }}
+            BUILD_DATE=${{ steps.meta.outputs.build_date }}
+          tags: mautic:test
+          provenance: false
+
+      - name: Save image tarball
+        run: docker save mautic:test -o /tmp/image.tar
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: image
+          path: /tmp/image.tar
+          retention-days: 1
+
+  test:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download image artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: image
+          path: /tmp
+
+      - name: Load image
+        run: docker load -i /tmp/image.tar
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install test deps
+        run: pip install -r tests/requirements.txt
+
+      - uses: docker/setup-buildx-action@v4
+
+      # Full suite, including the `runtime` UID-rebuild class. The rebuild test
+      # runs `docker build` from the repo root, hence the checkout + buildx
+      # above. No database is needed by any test.
+      - name: Image + runtime tests
+        env:
+          IMAGE: mautic:test
+        run: pytest -v tests/ --junitxml=report.xml
+
+      - name: Upload pytest report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pytest-report
+          path: report.xml
+          retention-days: 7
+
+  publish:
+    needs: [build, test]
+    # Tag pushes always publish. Manual dispatch publishes unless the
+    # `publish` input is set to false (test-only runs).
+    if: github.event_name != 'workflow_dispatch' || inputs.publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Download image artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: image
+          path: /tmp
+
+      - name: Load image
+        run: docker load -i /tmp/image.tar
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Push three refs to each registry:
+      #   <version>-r<n>   immutable — this exact build, never reused
+      #   <version>        mutable — points at the latest revision of this Mautic version
+      #   latest           mutable — most recent build overall
+      #
+      # docker save + docker push preserve the Docker manifest schema (not OCI),
+      # which is what the podman HEALTHCHECK rationale in the Dockerfile depends on.
+      - name: Tag and push
+        env:
+          MAUTIC_VER: ${{ needs.build.outputs.mautic_version }}
+          REVISION: ${{ needs.build.outputs.image_revision }}
+          DOCKERHUB_REPO: ${{ secrets.DOCKERHUB_USERNAME }}/docker-mautic
+        run: |
+          set -euo pipefail
+          for REPO in "${REGISTRY}/${IMAGE_NAME}" "docker.io/${DOCKERHUB_REPO}"; do
+            docker tag mautic:test "${REPO}:${MAUTIC_VER}-${REVISION}"
+            docker tag mautic:test "${REPO}:${MAUTIC_VER}"
+            docker tag mautic:test "${REPO}:latest"
+            docker push "${REPO}:${MAUTIC_VER}-${REVISION}"
+            docker push "${REPO}:${MAUTIC_VER}"
+            docker push "${REPO}:latest"
+          done
