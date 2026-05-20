@@ -1,0 +1,144 @@
+#!/usr/bin/env php
+<?php
+// mautic-db-guard: gate the Mautic bootstrap from migrating against a
+// non-Mautic / partially-migrated database. Two subcommands:
+//
+//   preflight  exit 0 if DB is empty OR has both a doctrine migrations
+//              table and a full Mautic core schema; exit 1 otherwise.
+//   installed  exit 0 if Mautic schema is present; exit 1 otherwise.
+//
+// MySQL/MariaDB only (Mautic's first-class path). Reads DB connection
+// straight from /data/config/local.php so the guard tracks the same
+// configuration the rest of the boot uses.
+//
+// Concurrency note: this guard assumes a single bootstrapper per DB.
+// Two containers racing first-boot against the same empty DB will both
+// pass preflight; Doctrine's own migration lock handles the migrate-time
+// race, but the guard does not coordinate across containers.
+
+if (PHP_SAPI !== 'cli') { fwrite(STDERR, "cli only\n"); exit(2); }
+
+$cmd = $argv[1] ?? '';
+if (!in_array($cmd, ['preflight', 'installed'], true)) {
+    fwrite(STDERR, "usage: mautic-db-guard {preflight|installed}\n");
+    exit(2);
+}
+
+$localPhp = '/data/config/local.php';
+if (!is_file($localPhp)) {
+    if ($cmd === 'installed') exit(1);
+    fwrite(STDERR, "[mautic-db-guard] ERROR: $localPhp missing — bootstrap order bug\n");
+    exit(2);
+}
+
+$parameters = [];
+include $localPhp;
+if (!is_array($parameters)) {
+    fwrite(STDERR, "[mautic-db-guard] ERROR: $localPhp did not define \$parameters\n");
+    exit(2);
+}
+
+$host = $parameters['db_host']         ?? '';
+$port = (int) ($parameters['db_port']  ?? 3306);
+$name = $parameters['db_name']         ?? '';
+$user = $parameters['db_user']         ?? '';
+$pass = $parameters['db_password']     ?? '';
+$pfx  = (string) ($parameters['db_table_prefix'] ?? '');
+
+if ($host === '' || $name === '' || $user === '') {
+    fwrite(STDERR, "[mautic-db-guard] ERROR: incomplete DB config in $localPhp\n");
+    exit(2);
+}
+
+try {
+    $dsn = sprintf('mysql:host=%s;port=%d;dbname=%s;charset=utf8mb4', $host, $port, $name);
+    $pdo = new PDO($dsn, $user, $pass, [
+        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+        PDO::ATTR_TIMEOUT => 10,
+    ]);
+
+    $tables = countTables($pdo);
+    // Mautic configures Doctrine's migrations table as
+    // `${prefix}migrations`. Default Doctrine 3 is
+    // `doctrine_migration_versions`; accept either to be robust against
+    // upstream changes.
+    $hasMigrations = tableExists($pdo, $pfx . 'migrations')
+        || tableExists($pdo, 'migrations')
+        || tableExists($pdo, $pfx . 'doctrine_migration_versions')
+        || tableExists($pdo, 'doctrine_migration_versions');
+    $core = ['leads', 'campaigns', 'emails', 'users'];
+    $missing = [];
+    foreach ($core as $t) {
+        if (!tableExists($pdo, $pfx . $t)) $missing[] = $pfx . $t;
+    }
+    // Require BOTH migrations metadata AND a full Mautic core schema.
+    // Core-tables-alone is not enough: it would happily migrate against
+    // a foreign schema that coincidentally has overlapping table names
+    // ('users' is the obvious collision case).
+    $isMautic = empty($missing) && $hasMigrations;
+
+    if ($cmd === 'installed') {
+        exit($isMautic ? 0 : 1);
+    }
+
+    // ---- preflight ----
+    if ($isMautic) {
+        fwrite(STDERR, "[mautic-db-guard] DB has Mautic schema; proceeding\n");
+        exit(0);
+    }
+    if ($tables === 0) {
+        fwrite(STDERR, "[mautic-db-guard] DB is empty; first-boot install will initialize it\n");
+        exit(0);
+    }
+
+    $loc = sprintf("'%s' at %s:%d", $name, $host, $port);
+    if ($hasMigrations) {
+        $why = "missing Mautic core tables: " . implode(', ', $missing);
+        fwrite(STDERR, <<<EOT
+ERROR: target database {$loc} contains a Doctrine 'migrations' table
+       but is not a complete Mautic database ({$why}). This image
+       requires a dedicated Mautic database — refusing to migrate to
+       avoid corrupting another app's schema.
+
+EOT);
+    } elseif (empty($missing)) {
+        fwrite(STDERR, <<<EOT
+ERROR: target database {$loc} has all Mautic core table names but no
+       Doctrine 'migrations' table. This looks like a foreign schema
+       with coincidentally overlapping names (e.g. another app's
+       'users' table), or a Mautic install whose migrations metadata
+       was wiped. Refusing to migrate.
+
+EOT);
+    } else {
+        fwrite(STDERR, <<<EOT
+ERROR: target database {$loc} already contains {$tables} tables but
+       no Doctrine 'migrations' table. MAUTIC_DB_DATABASE likely points
+       to the wrong database. This image requires a dedicated Mautic
+       database.
+
+EOT);
+    }
+    exit(1);
+
+} catch (\Throwable $e) {
+    fwrite(STDERR, "[mautic-db-guard] FATAL " . get_class($e) . ": " . $e->getMessage() . "\n");
+    exit(2);
+}
+
+function tableExists(PDO $pdo, string $table): bool {
+    $stmt = $pdo->prepare(
+        "SELECT 1 FROM information_schema.tables "
+        . "WHERE table_schema = DATABASE() AND table_name = :t LIMIT 1"
+    );
+    $stmt->execute([':t' => $table]);
+    return (bool) $stmt->fetchColumn();
+}
+
+function countTables(PDO $pdo): int {
+    $stmt = $pdo->query(
+        "SELECT COUNT(*) FROM information_schema.tables "
+        . "WHERE table_schema = DATABASE()"
+    );
+    return (int) $stmt->fetchColumn();
+}

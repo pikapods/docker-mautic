@@ -1,0 +1,10 @@
+#!/command/with-contenv sh
+# Mautic Symfony Messenger consumer — email transport.
+# --time-limit and --memory-limit recycle the worker so long PHP processes
+# do not creep on memory; s6 longrun auto-respawns after exit.
+
+[ "${ENABLE_MAUTIC_WORKER_EMAIL:-TRUE}" = "TRUE" ] || exec sleep infinity
+
+cd /var/www/html || exit 1
+exec php bin/console messenger:consume email \
+    --env=prod --no-debug --time-limit=3600 --memory-limit=256M

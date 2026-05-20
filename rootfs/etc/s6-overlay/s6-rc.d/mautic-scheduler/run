@@ -1,0 +1,41 @@
+#!/command/with-contenv sh
+# Mautic scheduler — per-minute tick dispatching the three core jobs at
+# the cadence Mautic's upstream cron template defines. Hard-kills a stuck
+# job before the next dispatch window.
+#
+#   :00, :15, :30, :45  mautic:segments:update
+#   :05, :20, :35, :50  mautic:campaigns:update
+#   :10, :25, :40, :55  mautic:campaigns:trigger
+#
+# Each tick runs at most one job (the case minutes are non-overlapping)
+# so no inter-job locking is needed.
+
+[ "${ENABLE_MAUTIC_SCHEDULER:-TRUE}" = "TRUE" ] || exec sleep infinity
+
+cd /var/www/html || exit 1
+
+while :; do
+    start=$(date +%s)
+    minute=$(date +%-M)
+
+    case "$minute" in
+        0|15|30|45)
+            # BusyBox timeout (Alpine) uses short flags only.
+            timeout -s TERM -k 5 600 \
+                php bin/console mautic:segments:update --env=prod --no-debug >&2 || true
+            ;;
+        5|20|35|50)
+            timeout -s TERM -k 5 600 \
+                php bin/console mautic:campaigns:update --env=prod --no-debug >&2 || true
+            ;;
+        10|25|40|55)
+            timeout -s TERM -k 5 600 \
+                php bin/console mautic:campaigns:trigger --env=prod --no-debug >&2 || true
+            ;;
+    esac
+
+    elapsed=$(( $(date +%s) - start ))
+    if [ "$elapsed" -lt 60 ]; then
+        sleep $(( 60 - elapsed ))
+    fi
+done

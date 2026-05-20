@@ -1,0 +1,9 @@
+# Only the rootfs overlay is needed in the build context. Everything
+# else is documentation, repo metadata, or local-only tooling that
+# would just slow down `docker build` (and risks leaking secrets if
+# untracked files accumulate).
+*
+
+!Dockerfile
+!rootfs/
+!rootfs/**

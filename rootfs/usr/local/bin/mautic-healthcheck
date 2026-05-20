@@ -1,0 +1,9 @@
+#!/bin/sh
+# HEALTHCHECK probe. Mautic / Symfony's trusted_hosts (if configured) will
+# 421 any request whose Host header does not match site_url — mirror
+# MAUTIC_URL's host so loopback probes pass.
+set -eu
+url=${MAUTIC_URL:-}
+host=$(printf '%s' "$url" | sed -E 's#^[A-Za-z]+://##; s#/.*##; s#:[0-9]+$##')
+host=${host:-localhost}
+exec curl -fsS -H "Host: $host" http://127.0.0.1:8080/s/login -o /dev/null

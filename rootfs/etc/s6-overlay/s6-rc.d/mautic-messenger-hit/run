@@ -1,0 +1,8 @@
+#!/command/with-contenv sh
+# Mautic Symfony Messenger consumer — hit (page-hit / tracking) transport.
+
+[ "${ENABLE_MAUTIC_WORKER_HIT:-TRUE}" = "TRUE" ] || exec sleep infinity
+
+cd /var/www/html || exit 1
+exec php bin/console messenger:consume hit \
+    --env=prod --no-debug --time-limit=3600 --memory-limit=256M

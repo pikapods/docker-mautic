@@ -1,0 +1,8 @@
+#!/command/with-contenv sh
+# Mautic Symfony Messenger consumer — failed-message retry transport.
+
+[ "${ENABLE_MAUTIC_WORKER_FAILED:-TRUE}" = "TRUE" ] || exec sleep infinity
+
+cd /var/www/html || exit 1
+exec php bin/console messenger:consume failed \
+    --env=prod --no-debug --time-limit=3600 --memory-limit=256M

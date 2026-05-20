@@ -1,0 +1,43 @@
+name: mautic
+
+services:
+  mariadb:
+    image: mariadb:11
+    environment:
+      MARIADB_DATABASE: mautic
+      MARIADB_USER: mautic
+      MARIADB_PASSWORD: changeme        # change before any real deployment
+      MARIADB_ROOT_PASSWORD: changeme   # change before any real deployment
+    volumes:
+      - mariadb-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mariadb-admin ping -h 127.0.0.1 -uroot -p$$MARIADB_ROOT_PASSWORD --silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  mautic:
+    image: ${MAUTIC_IMAGE:-ghcr.io/pikapods/docker-mautic:latest}
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    environment:
+      MAUTIC_URL: http://localhost:8080
+      MAUTIC_DB_HOST: mariadb
+      MAUTIC_DB_PORT: "3306"
+      MAUTIC_DB_DATABASE: mautic
+      MAUTIC_DB_USER: mautic
+      MAUTIC_DB_PASSWORD: changeme
+      ADMIN_EMAIL: admin@example.com
+      ADMIN_PASSWORD: S3cure-Mautic!2026   # change before any real deployment
+    volumes:
+      - mautic-data:/data
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+volumes:
+  mariadb-data:
+  mautic-data:
