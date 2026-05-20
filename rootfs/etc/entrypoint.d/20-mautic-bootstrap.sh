@@ -147,6 +147,17 @@ elif [ -n "${ADMIN_EMAIL:-}" ] && [ -n "${ADMIN_PASSWORD:-}" ]; then
         --db_table_prefix "$MAUTIC_DB_TABLE_PREFIX" \
         "$MAUTIC_URL" ) >&2 \
         || die "mautic:install failed"
+    # mautic:install builds the schema directly via Doctrine's schema tool and
+    # does NOT populate the migrations metadata table. Baseline it: create the
+    # metadata storage, then mark every existing migration as already-applied.
+    # Without this, on the next boot (a) mautic-db-guard preflight sees the core
+    # tables but no migrations table and aborts — killing the container on its
+    # first restart — and (b) doctrine:migrations:migrate would try to re-run
+    # every migration against the already-created schema.
+    ( cd "$APP_DIR" && php bin/console doctrine:migrations:sync-metadata-storage -n --env=prod --no-debug ) >&2 \
+        || die "post-install doctrine:migrations:sync-metadata-storage failed"
+    ( cd "$APP_DIR" && php bin/console doctrine:migrations:version --add --all -n --env=prod --no-debug ) >&2 \
+        || die "post-install doctrine:migrations:version baseline failed"
     # mautic:install writes its own local.php; re-render to apply our
     # passthrough conventions and reassert ops-managed keys.
     mautic-local-php-render "$LOCAL_PHP" \
