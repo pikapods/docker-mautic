@@ -1,6 +1,6 @@
 # docker-mautic
 
-Single-container Mautic image. nginx + php-fpm + scheduler + Symfony
+Single-container [Mautic](https://www.mautic.org) image. nginx + php-fpm + scheduler + Symfony
 Messenger workers, all supervised by s6 inside one container. All
 mutable state lives under `/data`.
 
@@ -20,24 +20,6 @@ docker compose logs -f mautic
 
 Browse to <http://localhost:8080/s/login> and sign in with the
 credentials from `compose.yaml`.
-
-## Build
-
-```sh
-podman build \
-    --build-arg MAUTIC_VERSION=7.1.1 \
-    --build-arg PHP_VERSION=8.3 \
-    -t docker-mautic:7.1.1 .
-```
-
-Build args:
-
-| Arg | Default | Notes |
-|---|---|---|
-| `MAUTIC_VERSION` | `7.1.1` | Pinned stable. `composer create-project mautic/recommended-project:<ver>` resolves it. Override to bump or to build a dev branch (`7.x-dev`). |
-| `PHP_VERSION` | `8.3` | Must satisfy Mautic's `~8.2` constraint. |
-| `BASE_IMAGE` | `serversideup/php:${PHP_VERSION}-fpm-nginx-alpine` | Tag-based default tracks upstream. Production builds should override with a digest reference (`serversideup/php@sha256:…`) for full reproducibility. |
-| `WWW_DATA_UID` / `WWW_DATA_GID` | `82` | Rebuild with `$(id -u)` / `$(id -g)` for bind-mount UX without host-side chown. |
 
 ## Environment variables
 
