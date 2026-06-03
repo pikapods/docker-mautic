@@ -46,6 +46,7 @@ Optional:
 | `ENABLE_MAUTIC_SCHEDULER` | `TRUE` | Set to anything else to park the scheduler in `sleep infinity`. |
 | `ENABLE_MAUTIC_WORKER_EMAIL` / `_HIT` / `_FAILED` | `TRUE` | Per-transport toggles for the Messenger workers. |
 | `MAUTIC_PARAM_<KEY>` | — | Passthrough into `local.php` as `<key> => <value>`. E.g. `MAUTIC_PARAM_MAILER_DSN=smtp://user:pass@smtp.example.com:587`. Sentinel values `unset` / `null` / empty string delete the key. |
+| `MAUTIC_PARAM_TRUSTED_PROXIES` | — | Comma-separated proxy IPs/CIDRs Mautic trusts for `X-Forwarded-*` headers. Required behind an SSL-terminating reverse proxy, else Mautic loops redirecting to HTTPS. E.g. `127.0.0.1, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16`. |
 | `PHP_*` | — | Forwarded to the base image's php.ini renderer (`PHP_MEMORY_LIMIT`, `PHP_UPLOAD_MAX_FILESIZE`, `PHP_DATE_TIMEZONE`, …). |
 
 If neither `ADMIN_EMAIL` nor an existing install is detected on first
