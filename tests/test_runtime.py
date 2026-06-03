@@ -463,12 +463,20 @@ def test_param_passthrough(stack):
     assert _read_local_php(mtc, "mailer_from_email") == "ops@acme.test"
 
 
-def test_trusted_proxies_csv_renders_json_array(stack):
-    # Mautic wraps trusted_proxies in the json: env processor, so local.php
-    # must hold a JSON array string; a bare CSV fails at boot. The render
-    # helper coerces the friendly comma-separated input into JSON.
+def test_trusted_proxies_csv_renders_php_array(stack):
+    # trusted_proxies defaults to an array in Mautic, so local.php must hold a
+    # real PHP array: Mautic json-encodes it for the json: env processor, and
+    # TrustMiddleware reads the raw array for Request::setTrustedProxies(array).
+    # The render helper coerces the friendly comma-separated input into one.
     mtc = stack["mtc"]
-    assert _read_local_php(mtc, "trusted_proxies") == '["127.0.0.1","10.0.0.0/8"]'
+    r = _exec(
+        mtc, "php", "-r",
+        "include '/data/config/local.php';"
+        "echo json_encode([is_array($parameters['trusted_proxies']), $parameters['trusted_proxies']]);",
+    )
+    is_array, value = json.loads(r.stdout.strip())
+    assert is_array is True, "trusted_proxies must render as a PHP array, not a string"
+    assert value == ["127.0.0.1", "10.0.0.0/8"]
 
 
 def test_secret_key_stable_across_restart(stack_persistent):

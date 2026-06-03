@@ -13,19 +13,20 @@
 // (rotating it invalidates encrypted DB columns and active sessions).
 // MAUTIC_PARAM_<KEY> env vars pass through as <key> => <value> after
 // lower-snake conversion; sentinel values `unset`, `null`, or empty
-// string delete the key. Keys Mautic consumes as JSON arrays (see
-// JSON_ARRAY_PARAMS) accept a friendly comma-separated list and are
-// emitted as a JSON array string.
+// string delete the key. Keys Mautic stores as arrays (see ARRAY_PARAMS)
+// accept a friendly comma-separated list and are emitted as a PHP array.
 
 if (PHP_SAPI !== 'cli') { fwrite(STDERR, "cli only\n"); exit(2); }
 
-// Mautic parameters whose bundle default is an array get wrapped in the
-// json: env processor (app/config/parameters.php), so their local.php value
-// must be a JSON array string — a bare scalar or CSV fails at boot with
-// "Invalid JSON env var ... array or null expected". Accept a comma-separated
-// list for these and emit JSON; a value already written as JSON passes
-// through unchanged.
-const JSON_ARRAY_PARAMS = ['trusted_proxies', 'trusted_hosts'];
+// Mautic parameters whose bundle default is an array (e.g. trusted_proxies,
+// trusted_hosts) must be written to local.php as a real PHP array. Mautic
+// json_encodes the array when it exports the MAUTIC_<KEY> env var that the
+// json: processor decodes (CoreBundle ConfigEnvVars::load), and TrustMiddleware
+// reads the raw array straight from local.php for Request::setTrustedProxies()
+// — which is typed `array`. A scalar or JSON *string* breaks both paths
+// ("array expected, string given" at boot; TypeError on every request).
+// Accept either a comma-separated list or a JSON array here; emit a PHP array.
+const ARRAY_PARAMS = ['trusted_proxies', 'trusted_hosts'];
 
 $target = $argv[1] ?? '';
 if ($target === '') {
@@ -77,8 +78,8 @@ foreach ($_ENV + getenv() as $name => $value) {
         unset($out[$key]);
         continue;
     }
-    $out[$key] = in_array($key, JSON_ARRAY_PARAMS, true)
-        ? toJsonArray($val)
+    $out[$key] = in_array($key, ARRAY_PARAMS, true)
+        ? toList($val)
         : coerceScalar($val);
 }
 
@@ -101,21 +102,20 @@ if (!rename($tmp, $target)) {
 }
 exit(0);
 
-function toJsonArray(string $v): string {
-    // Pass a value already written as JSON through unchanged (re-encoded to
-    // normalise), otherwise split a comma-separated list into a JSON array.
+function toList(string $v): array {
+    // Accept a value already written as a JSON array, otherwise split a
+    // comma-separated list. Either way return a PHP array.
     if (str_starts_with(ltrim($v), '[')) {
         $decoded = json_decode($v, true);
         if (is_array($decoded)) {
-            return json_encode(array_values($decoded), JSON_UNESCAPED_SLASHES);
+            return array_values($decoded);
         }
         // Bracketed but not valid JSON — fall through to CSV parsing.
     }
-    $items = array_values(array_filter(
+    return array_values(array_filter(
         array_map('trim', explode(',', $v)),
         static fn (string $s): bool => $s !== ''
     ));
-    return json_encode($items, JSON_UNESCAPED_SLASHES);
 }
 
 function coerceScalar(string $v) {
@@ -134,6 +134,14 @@ function exportValue($v): string {
     if (is_int($v))    return (string) $v;
     if (is_float($v))  return (string) $v;
     if (is_null($v))   return 'null';
-    if (is_array($v))  return var_export($v, true);
+    if (is_array($v)) {
+        // Compact single-line literal for sequential lists (trusted_proxies/
+        // hosts); var_export preserves keys for anything associative.
+        if (array_is_list($v)) {
+            $items = array_map(static fn ($i): string => var_export((string) $i, true), $v);
+            return '[' . implode(', ', $items) . ']';
+        }
+        return var_export($v, true);
+    }
     return var_export((string) $v, true);
 }
