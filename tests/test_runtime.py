@@ -236,6 +236,8 @@ def stack():
             # Passthrough probe: free here, no extra boot needed.
             "-e", "MAUTIC_PARAM_MAILER_FROM_NAME=Acme",
             "-e", "MAUTIC_PARAM_MAILER_FROM_EMAIL=ops@acme.test",
+            # CSV -> JSON-array coercion probe for the trusted_proxies key.
+            "-e", "MAUTIC_PARAM_TRUSTED_PROXIES=127.0.0.1, 10.0.0.0/8",
             "-p", ":8080",
             IMAGE,
         )
@@ -459,6 +461,14 @@ def test_param_passthrough(stack):
     mtc = stack["mtc"]
     assert _read_local_php(mtc, "mailer_from_name") == "Acme"
     assert _read_local_php(mtc, "mailer_from_email") == "ops@acme.test"
+
+
+def test_trusted_proxies_csv_renders_json_array(stack):
+    # Mautic wraps trusted_proxies in the json: env processor, so local.php
+    # must hold a JSON array string; a bare CSV fails at boot. The render
+    # helper coerces the friendly comma-separated input into JSON.
+    mtc = stack["mtc"]
+    assert _read_local_php(mtc, "trusted_proxies") == '["127.0.0.1","10.0.0.0/8"]'
 
 
 def test_secret_key_stable_across_restart(stack_persistent):

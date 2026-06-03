@@ -13,9 +13,19 @@
 // (rotating it invalidates encrypted DB columns and active sessions).
 // MAUTIC_PARAM_<KEY> env vars pass through as <key> => <value> after
 // lower-snake conversion; sentinel values `unset`, `null`, or empty
-// string delete the key.
+// string delete the key. Keys Mautic consumes as JSON arrays (see
+// JSON_ARRAY_PARAMS) accept a friendly comma-separated list and are
+// emitted as a JSON array string.
 
 if (PHP_SAPI !== 'cli') { fwrite(STDERR, "cli only\n"); exit(2); }
+
+// Mautic parameters whose bundle default is an array get wrapped in the
+// json: env processor (app/config/parameters.php), so their local.php value
+// must be a JSON array string — a bare scalar or CSV fails at boot with
+// "Invalid JSON env var ... array or null expected". Accept a comma-separated
+// list for these and emit JSON; a value already written as JSON passes
+// through unchanged.
+const JSON_ARRAY_PARAMS = ['trusted_proxies', 'trusted_hosts'];
 
 $target = $argv[1] ?? '';
 if ($target === '') {
@@ -67,7 +77,9 @@ foreach ($_ENV + getenv() as $name => $value) {
         unset($out[$key]);
         continue;
     }
-    $out[$key] = coerceScalar($val);
+    $out[$key] = in_array($key, JSON_ARRAY_PARAMS, true)
+        ? toJsonArray($val)
+        : coerceScalar($val);
 }
 
 // Render as a valid PHP file.
@@ -88,6 +100,23 @@ if (!rename($tmp, $target)) {
     exit(1);
 }
 exit(0);
+
+function toJsonArray(string $v): string {
+    // Pass a value already written as JSON through unchanged (re-encoded to
+    // normalise), otherwise split a comma-separated list into a JSON array.
+    if (str_starts_with(ltrim($v), '[')) {
+        $decoded = json_decode($v, true);
+        if (is_array($decoded)) {
+            return json_encode(array_values($decoded), JSON_UNESCAPED_SLASHES);
+        }
+        // Bracketed but not valid JSON — fall through to CSV parsing.
+    }
+    $items = array_values(array_filter(
+        array_map('trim', explode(',', $v)),
+        static fn (string $s): bool => $s !== ''
+    ));
+    return json_encode($items, JSON_UNESCAPED_SLASHES);
+}
 
 function coerceScalar(string $v) {
     // Type-coerce common literals so MAUTIC_PARAM_DB_PORT=3306 lands as int
