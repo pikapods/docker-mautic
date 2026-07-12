@@ -35,18 +35,53 @@ USER root
 # that composer resolves to the same artifact across builds.
 ARG MAUTIC_VERSION=7.1.1
 
-RUN apk add --no-cache git unzip nodejs npm \
+RUN apk add --no-cache git unzip nodejs npm curl \
     && install-php-extensions intl pdo_mysql mysqli zip bcmath sockets gd imap exif opcache iconv
+
+# Helper that reads the upstream monorepo lock and emits exact composer pins.
+COPY build/collect-upstream-pins.php /usr/local/lib/
 
 # composer create-project lays down Mautic's deployable artifact —
 # docroot/, var/, config/ split — and runs npm + webpack via post-install
 # scripts. mautic:assets:generate is a safety net in case the webpack step
 # did not run (e.g. plugin-level overrides).
+#
+# recommended-project ships NO composer.lock, so a plain create-project
+# re-resolves every floating transitive dep on each build — the tree drifts
+# freely (that is how Twig 3.28.0 slipped in and 500'd /s/login). To make the
+# build reproducible we resolve against the exact set Mautic validated for
+# this release: the mautic/mautic monorepo commits a composer.lock at every
+# tag, and empirically it covers 100% of our third-party surface.
+#
+# Flow: lay down recommended-project's composer.json WITHOUT installing, fetch
+# the upstream lock for ${MAUTIC_VERSION}, pin every third-party (non-mautic/*)
+# prod package from it via `require --no-update`, then install once. The
+# scaffold (docroot split) runs as a composer plugin, not a script, so it is
+# produced regardless of --no-scripts; npm/webpack run on the final, pinned
+# install. Mautic's own plugins/themes stay at recommended-project's exacts.
+#
+# COMPOSER_POLICY_ADVISORIES_BLOCK=0 on the install: Composer 2.10 blocks
+# resolving to any version with an active security advisory. Pinning to
+# upstream's validated lock deliberately selects the exact versions Mautic
+# 7.1.x shipped, some of which have since had advisories filed against them
+# (symfony, twig, guzzle, aws-sdk, …). Floating dodged those by picking newer
+# patched releases — which is exactly how the broken Twig 3.28 got in. We
+# accept upstream's tree verbatim: same security posture as a stock Mautic
+# ${MAUTIC_VERSION} install, no better and no worse, but reproducible.
 RUN COMPOSER_ALLOW_SUPERUSER=1 COMPOSER_PROCESS_TIMEOUT=10000 \
         composer create-project \
-            --no-interaction --no-progress --no-dev \
+            --no-interaction --no-progress --no-dev --no-scripts --no-install \
             "mautic/recommended-project:${MAUTIC_VERSION}" /build \
+    && curl -fsSL \
+        "https://raw.githubusercontent.com/mautic/mautic/${MAUTIC_VERSION}/composer.lock" \
+        -o /tmp/upstream-core.lock \
     && cd /build \
+    && COMPOSER_ALLOW_SUPERUSER=1 composer require \
+            --no-interaction --no-update --no-scripts \
+            $(php /usr/local/lib/collect-upstream-pins.php /tmp/upstream-core.lock composer.json) \
+    && COMPOSER_ALLOW_SUPERUSER=1 COMPOSER_PROCESS_TIMEOUT=10000 \
+       COMPOSER_POLICY_ADVISORIES_BLOCK=0 \
+        composer install --no-interaction --no-progress --no-dev \
     && php bin/console mautic:assets:generate --no-debug --env=prod \
     && rm -rf var/cache/js \
     && if [ -d node_modules ]; then \

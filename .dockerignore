@@ -7,3 +7,5 @@
 !Dockerfile
 !rootfs/
 !rootfs/**
+!build/
+!build/**
