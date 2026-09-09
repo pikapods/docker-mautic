@@ -95,6 +95,33 @@ services. Phases:
    Otherwise: log warning, skip — finish setup via the web installer.
 8. `cache:clear` (best-effort).
 
+Step 4 is a read-modify-write: every key already in `local.php` is read back
+and re-serialized, not just the ones listed above, so keys written by the
+installer or the admin UI survive. The render is verified to reproduce the
+in-memory config exactly before it replaces the file; if it does not, the
+boot fails loudly and the existing `local.php` is left untouched.
+
+### Repairing an `'Array'`-corrupted local.php
+
+Images before this check shipped a renderer that flattened any nested array
+inside a list-valued parameter to the literal string `'Array'`, and rewrote
+the damage on every restart. `editor_fonts` is the parameter that bites:
+Mautic reads it on every page render and type-hints each entry as `array`,
+so a corrupted value is a site-wide 500 (`TypeError` in
+`ContentExtension::sortEditorFonts()`), not a broken feature.
+
+Upgrading stops new corruption but preserves what is already on disk. Find
+affected instances:
+
+```sh
+grep -l "'Array'" /data/config/local.php
+```
+
+The original value is not recoverable from the file. Restore it from a
+backup, or delete the affected key entirely — Mautic then falls back to the
+bundle default, which is the correct value for `editor_fonts`. Restart
+afterwards.
+
 ## User & permissions
 
 The container runs as `www-data` (UID 82 on Alpine). For bind mounts the

@@ -41,6 +41,30 @@ def _run(*args, check=False):
     )
 
 
+# Seed config for the local.php render tests: the value shapes that the
+# renderer must reproduce verbatim, not just the string-list case it was
+# originally written for.
+SEED_LOCAL_PHP = """<?php
+$parameters = [
+    'editor_fonts' => [
+        ['name' => 'Arial', 'font' => 'Arial, Helvetica, sans-serif'],
+        ['name' => 'Georgia', 'font' => 'Georgia, serif'],
+    ],
+    'ports' => [80, 443],
+    'flags' => [true, false],
+    'maybe' => [null, 'a'],
+    'nested_map' => ['a' => ['b' => 'c']],
+    'multiline' => ['text' => "line one\\nline two"],
+];
+"""
+
+PROBE_PHP = """<?php
+include '/tmp/local.php';
+$keys = ['editor_fonts', 'ports', 'flags', 'maybe', 'nested_map', 'multiline'];
+echo json_encode(array_intersect_key($parameters, array_flip($keys)));
+"""
+
+
 class TestImageMetadata:
     def test_required_oci_labels(self, inspect):
         # revision/created are intentionally omitted: they come from GIT_SHA /
@@ -218,6 +242,53 @@ class TestImageFilesystem:
         assert "usage: mautic-local-php-render" in r.stderr, (
             f"usage line missing from stderr: {r.stderr!r}"
         )
+
+    def test_render_preserves_nested_and_typed_values(self):
+        # Regression: exportValue() cast every element of a list to string, so
+        # a list of arrays collapsed to ['Array', ...] and bools/nulls to ''.
+        # editor_fonts is the canonical victim — Mautic type-hints `array` on
+        # each entry, so a corrupted one is a fatal on every page render. The
+        # renderer re-serializes the whole file on every boot, so keys it does
+        # not own have to survive verbatim.
+        script = (
+            "set -e\n"
+            "cat > /tmp/local.php <<'SEED'\n" + SEED_LOCAL_PHP + "SEED\n"
+            "cat > /tmp/probe.php <<'PROBE'\n" + PROBE_PHP + "PROBE\n"
+            "/usr/local/bin/mautic-local-php-render /tmp/local.php\n"
+            "php /tmp/probe.php\n"
+        )
+        r = _run("sh", "-c", script)
+        assert r.returncode == 0, f"render failed: {r.stderr!r}"
+        # JSON keeps the distinctions the old cast destroyed: 80 vs "80",
+        # true vs "1", null vs "".
+        assert json.loads(r.stdout) == {
+            "editor_fonts": [
+                {"name": "Arial", "font": "Arial, Helvetica, sans-serif"},
+                {"name": "Georgia", "font": "Georgia, serif"},
+            ],
+            "ports": [80, 443],
+            "flags": [True, False],
+            "maybe": [None, "a"],
+            "nested_map": {"a": {"b": "c"}},
+            # A newline inside a string value is indistinguishable from
+            # var_export's own line breaks — reformatting its output edits data.
+            "multiline": {"text": "line one\nline two"},
+        }, f"values did not round-trip: {r.stdout!r}"
+
+    def test_render_is_idempotent(self):
+        # Second boot must be a no-op. Any lossy branch shows up as drift here
+        # even when a single pass looks plausible.
+        script = (
+            "set -e\n"
+            "cat > /tmp/local.php <<'SEED'\n" + SEED_LOCAL_PHP + "SEED\n"
+            "/usr/local/bin/mautic-local-php-render /tmp/local.php\n"
+            "cp /tmp/local.php /tmp/pass1.php\n"
+            "/usr/local/bin/mautic-local-php-render /tmp/local.php\n"
+            "php -r 'echo md5_file(\"/tmp/pass1.php\") === md5_file(\"/tmp/local.php\") ? \"SAME\" : \"DRIFT\";'\n"
+        )
+        r = _run("sh", "-c", script)
+        assert r.returncode == 0, f"render failed: {r.stderr!r}"
+        assert r.stdout.strip() == "SAME", f"re-render drifted: {r.stdout!r}"
 
     def test_healthcheck_script_present(self):
         r = _run("test", "-x", "/usr/local/bin/mautic-healthcheck")

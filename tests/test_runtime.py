@@ -496,6 +496,45 @@ def test_secret_key_stable_across_restart(stack_persistent):
     assert key1 == key2, f"secret_key changed across restart: {key1!r} -> {key2!r}"
 
 
+def test_nested_array_param_survives_restart(stack_persistent):
+    # The renderer re-serializes every key in local.php on each boot, so a
+    # serializer gap does not just corrupt once — it re-corrupts on every
+    # restart, which is what made the editor_fonts case a permanent 500.
+    # editor_fonts is read on every page render and each entry is type-hinted
+    # `array`, so a flattened entry is a site-wide fatal, not a lost feature.
+    mtc = stack_persistent["mtc"]
+    fonts = [
+        {"name": "Arial", "font": "Arial, Helvetica, sans-serif"},
+        {"name": "Georgia", "font": "Georgia, serif"},
+    ]
+    _exec(
+        mtc, "php", "-r",
+        "$f = '/data/config/local.php';"
+        "$parameters = null; include $f;"
+        "$parameters['editor_fonts'] = json_decode('" + json.dumps(fonts) + "', true);"
+        "file_put_contents($f, \"<?php\\n\\$parameters = \" . var_export($parameters, true) . \";\\n\");",
+        check=True,
+    )
+    _sh("docker", "restart", mtc)
+    # `-p :8080` makes the host port ephemeral; re-query after the restart.
+    port = _host_port(mtc, "8080")
+    try:
+        # A corrupted editor_fonts is a TypeError on every page render, so
+        # reaching a 200 here is itself part of the assertion.
+        _wait_http_200(f"http://127.0.0.1:{port}{LOGIN_PATH}", READY_DEADLINE_S)
+    except RuntimeError:
+        _dump_logs(mtc)
+        raise
+    r = _exec(
+        mtc, "php", "-r",
+        "include '/data/config/local.php';"
+        "echo json_encode($parameters['editor_fonts'] ?? null);",
+    )
+    assert json.loads(r.stdout.strip()) == fonts, (
+        f"editor_fonts did not survive the re-render: {r.stdout!r}"
+    )
+
+
 @pytest.mark.parametrize("path,flag", [
     ("/data/config", "-d"),
     ("/data/config/local.php", "-f"),

@@ -15,6 +15,8 @@
 // lower-snake conversion; sentinel values `unset`, `null`, or empty
 // string delete the key. Keys Mautic stores as arrays (see ARRAY_PARAMS)
 // accept a friendly comma-separated list and are emitted as a PHP array.
+// Keys this script does not own are re-serialized verbatim, so the render is
+// verified to round-trip before it replaces the existing file.
 
 if (PHP_SAPI !== 'cli') { fwrite(STDERR, "cli only\n"); exit(2); }
 
@@ -96,6 +98,23 @@ if (file_put_contents($tmp, implode("\n", $lines)) === false) {
     fwrite(STDERR, "[mautic-local-php-render] failed to write $tmp\n");
     exit(1);
 }
+// Verify the rendered file reproduces $out exactly before installing it.
+// This script re-serializes the whole existing parameter set on every boot,
+// so a serializer gap corrupts keys it does not own — persistently, since the
+// damage is read back and rewritten next boot. Fail loudly instead: the
+// existing local.php stays untouched and the entrypoint dies.
+$roundtrip = (static function (string $f) {
+    $parameters = null;
+    include $f; // own scope; cannot clobber the outer $parameters
+    return $parameters;
+})($tmp);
+
+if ($roundtrip !== $out) {
+    @unlink($tmp);
+    fwrite(STDERR, "[mautic-local-php-render] refusing to install $target: rendered file does not round-trip\n");
+    exit(1);
+}
+
 if (!rename($tmp, $target)) {
     fwrite(STDERR, "[mautic-local-php-render] failed to rename $tmp -> $target\n");
     exit(1);
@@ -130,18 +149,25 @@ function coerceScalar(string $v) {
 }
 
 function exportValue($v): string {
-    if (is_bool($v))   return $v ? 'true' : 'false';
-    if (is_int($v))    return (string) $v;
-    if (is_float($v))  return (string) $v;
-    if (is_null($v))   return 'null';
     if (is_array($v)) {
-        // Compact single-line literal for sequential lists (trusted_proxies/
-        // hosts); var_export preserves keys for anything associative.
-        if (array_is_list($v)) {
-            $items = array_map(static fn ($i): string => var_export((string) $i, true), $v);
+        // Compact single-line literal, but only for lists of scalars
+        // (trusted_proxies/hosts). Anything else — nested or associative —
+        // goes to var_export, which round-trips it faithfully. Casting a
+        // nested array to string here would silently write 'Array'.
+        if (array_is_list($v) && !array_filter($v, static fn ($i): bool => !is_scalar($i))) {
+            $items = array_map(static fn ($i): string => var_export($i, true), $v);
             return '[' . implode(', ', $items) . ']';
         }
+        // Not re-indented to match the surrounding block: var_export's own
+        // newlines are indistinguishable from newlines inside string values,
+        // so reformatting would edit the data.
         return var_export($v, true);
     }
+    // var_export renders every scalar (and null) as a faithful PHP literal:
+    // true, 80, 1.0, NULL. Stringifying them instead loses the type.
+    if ($v === null || is_scalar($v)) {
+        return var_export($v, true);
+    }
+    fwrite(STDERR, "[mautic-local-php-render] non-scalar value coerced to string\n");
     return var_export((string) $v, true);
 }
