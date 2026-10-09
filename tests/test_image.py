@@ -132,6 +132,8 @@ class TestImageMetadata:
         assert env.get("PHP_OPCACHE_ENABLE") == "1"
         assert env.get("PHP_OPCACHE_VALIDATE_TIMESTAMPS") == "1"
         assert env.get("PHP_MEMORY_LIMIT") == "512M"
+        assert env.get("PHP_UPLOAD_MAX_FILE_SIZE") == "512M"
+        assert env.get("NGINX_CLIENT_MAX_BODY_SIZE") == "512M"
 
 
 class TestImageFilesystem:
@@ -176,6 +178,7 @@ class TestImageFilesystem:
 
     @pytest.mark.parametrize("directive,expected", [
         # Effective values, not env: catches env vars the base image ignores.
+        ("upload_max_filesize", "512M"),
         ("post_max_size", "512M"),
         ("memory_limit", "512M"),
         ("opcache.validate_timestamps", "1"),

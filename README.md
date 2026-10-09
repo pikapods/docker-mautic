@@ -47,7 +47,8 @@ Optional:
 | `ENABLE_MAUTIC_WORKER_EMAIL` / `_HIT` / `_FAILED` | `TRUE` | Per-transport toggles for the Messenger workers. |
 | `MAUTIC_PARAM_<KEY>` | — | Passthrough into `local.php` as `<key> => <value>`. E.g. `MAUTIC_PARAM_MAILER_DSN=smtp://user:pass@smtp.example.com:587`. Sentinel values `unset` / `null` / empty string delete the key. |
 | `MAUTIC_PARAM_TRUSTED_PROXIES` | — | Comma-separated proxy IPs/CIDRs Mautic trusts for `X-Forwarded-*` headers. Required behind an SSL-terminating reverse proxy, else Mautic loops redirecting to HTTPS. E.g. `10.0.2.100/32` or `127.0.0.1, 10.0.0.0/8`. Rendered into `local.php` as the PHP array Mautic requires. |
-| `PHP_*` | — | Forwarded to the base image's php.ini renderer (`PHP_MEMORY_LIMIT`, `PHP_UPLOAD_MAX_FILESIZE`, `PHP_DATE_TIMEZONE`, …). |
+| `PHP_*` | — | Forwarded to the base image's php.ini renderer (`PHP_MEMORY_LIMIT`, `PHP_UPLOAD_MAX_FILE_SIZE`, `PHP_DATE_TIMEZONE`, …). |
+| `NGINX_CLIENT_MAX_BODY_SIZE` | `512M` | Max request body nginx accepts. Keep in line with `PHP_UPLOAD_MAX_FILE_SIZE` / `PHP_POST_MAX_SIZE`. |
 
 If neither `ADMIN_EMAIL` nor an existing install is detected on first
 boot, the bootstrap logs a warning and skips install — finish setup via
