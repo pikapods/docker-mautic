@@ -199,6 +199,8 @@ RUN chmod +x /etc/entrypoint.d/20-mautic-bootstrap.sh \
 # AUTORUN_ENABLED=false: we own the boot sequence; the base's Laravel
 # automations would otherwise interfere.
 # SSL_MODE=off: TLS terminates at the reverse proxy.
+# PHP_OPCACHE_VALIDATE_TIMESTAMPS=1: Mautic rewrites config/local.php and its
+# container cache at runtime; serversideup v5 defaults this to 0.
 ENV AUTORUN_ENABLED=false \
     SSL_MODE=off \
     APP_BASE_DIR=/var/www/html \
@@ -207,6 +209,7 @@ ENV AUTORUN_ENABLED=false \
     ENABLE_MAUTIC_WORKER_HIT=TRUE \
     ENABLE_MAUTIC_WORKER_FAILED=TRUE \
     PHP_OPCACHE_ENABLE=1 \
+    PHP_OPCACHE_VALIDATE_TIMESTAMPS=1 \
     PHP_MEMORY_LIMIT=512M \
     PHP_UPLOAD_MAX_FILESIZE=512M \
     PHP_POST_MAX_SIZE=512M \

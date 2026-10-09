@@ -130,6 +130,7 @@ class TestImageMetadata:
         assert env.get("ENABLE_MAUTIC_WORKER_HIT") == "TRUE"
         assert env.get("ENABLE_MAUTIC_WORKER_FAILED") == "TRUE"
         assert env.get("PHP_OPCACHE_ENABLE") == "1"
+        assert env.get("PHP_OPCACHE_VALIDATE_TIMESTAMPS") == "1"
         assert env.get("PHP_MEMORY_LIMIT") == "512M"
 
 
@@ -173,6 +174,17 @@ class TestImageFilesystem:
         modules = {line.strip() for line in r.stdout.splitlines() if line.strip()}
         assert ext in modules, f"PHP module {ext!r} not loaded; got {sorted(modules)}"
 
+    @pytest.mark.parametrize("directive,expected", [
+        # Effective values, not env: catches env vars the base image ignores.
+        ("post_max_size", "512M"),
+        ("memory_limit", "512M"),
+        ("opcache.validate_timestamps", "1"),
+    ])
+    def test_php_ini_effective(self, directive, expected):
+        r = _run("php", "-r", f"echo ini_get('{directive}');")
+        assert r.returncode == 0, r.stderr
+        assert r.stdout.strip() == expected, f"{directive}={r.stdout.strip()!r}"
+
     @pytest.mark.parametrize("svc", [
         "mautic-scheduler",
         "mautic-messenger-email",
@@ -195,6 +207,25 @@ class TestImageFilesystem:
             f"/etc/s6-overlay/s6-rc.d/{svc}/dependencies.d/20-mautic-bootstrap",
         )
         assert r.returncode == 0, f"{svc} dependency marker on bootstrap missing"
+
+    @pytest.mark.parametrize("svc", [
+        "mautic-scheduler",
+        "mautic-messenger-email",
+        "mautic-messenger-hit",
+        "mautic-messenger-failed",
+    ])
+    def test_s6_longruns_in_user_bundle(self, svc):
+        r = _run(
+            "test", "-f",
+            f"/etc/s6-overlay/user-bundles.d/user/contents.d/{svc}",
+        )
+        assert r.returncode == 0, f"{svc} not registered in user-bundles.d/user"
+
+    def test_no_legacy_user_bundle_dir(self):
+        # s6-overlay >= 3.2.3 switches to compat mode if s6-rc.d/user exists,
+        # ignoring user-bundles.d and failing to write its type file as www-data.
+        r = _run("test", "-e", "/etc/s6-overlay/s6-rc.d/user")
+        assert r.returncode != 0, "legacy /etc/s6-overlay/s6-rc.d/user present"
 
     def test_s6_bootstrap_oneshot_installed(self):
         # The base image's docker-php-serversideup-s6-init moves our
