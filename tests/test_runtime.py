@@ -370,6 +370,70 @@ def stack_workers_off():
         subprocess.run(["docker", "network", "rm", net], capture_output=True)
 
 
+PLUGIN_NAME = "SmokeTestBundle"
+PLUGIN_LINK = f"/var/www/html/docroot/plugins/{PLUGIN_NAME}"
+
+# Minimal self-contained plugin, same shape as the bundled MauticZapierBundle.
+_PLUGIN_SEED = f"""
+set -eu
+d=/data/plugins/{PLUGIN_NAME}
+mkdir -p "$d/Config"
+cat > "$d/{PLUGIN_NAME}.php" <<'PHP'
+<?php
+namespace MauticPlugin\\{PLUGIN_NAME};
+use Mautic\\PluginBundle\\Bundle\\PluginBundleBase;
+final class {PLUGIN_NAME} extends PluginBundleBase {{}}
+PHP
+cat > "$d/Config/config.php" <<'PHP'
+<?php
+return ['name' => 'Smoke Test', 'description' => 'test', 'version' => '1.0', 'author' => 'test'];
+PHP
+"""
+
+
+@pytest.fixture(scope="session")
+def stack_plugin():
+    # Named /data volume pre-seeded with a custom plugin before first boot,
+    # as an operator would after `docker cp` + recreate.
+    suffix = secrets.token_hex(4)
+    net = f"mtc-net-{suffix}"
+    db = f"mtc-db-{suffix}"
+    mtc = f"mtc-{suffix}"
+    vol = f"mtc-data-{suffix}"
+
+    _sh("docker", "network", "create", net)
+    _sh("docker", "volume", "create", vol)
+    try:
+        _sh(
+            "docker", "run", "--rm", "--entrypoint", "sh",
+            "-v", f"{vol}:/data", IMAGE, "-c", _PLUGIN_SEED,
+        )
+        _run_mariadb(net, db)
+        _sh(
+            "docker", "run", "-d", "--name", mtc, "--network", net,
+            "-e", "MAUTIC_URL=http://localhost:8080",
+            *_mautic_db_env(db),
+            "-e", "ADMIN_EMAIL=admin@smoke.local",
+            "-e", "ADMIN_PASSWORD=S3cure-Smoke!2026",
+            "-v", f"{vol}:/data",
+            "-p", ":8080",
+            IMAGE,
+        )
+        port = _host_port(mtc, "8080")
+        try:
+            _wait_bootstrap_complete(mtc)
+            _wait_http_200(f"http://127.0.0.1:{port}{LOGIN_PATH}", READY_DEADLINE_S)
+        except RuntimeError:
+            _dump_logs(mtc)
+            raise
+        yield {"mtc": mtc, "db": db, "net": net, "port": port, "vol": vol}
+    finally:
+        for name in (mtc, db):
+            subprocess.run(["docker", "rm", "-f", name], capture_output=True)
+        subprocess.run(["docker", "network", "rm", net], capture_output=True)
+        subprocess.run(["docker", "volume", "rm", vol], capture_output=True)
+
+
 @pytest.fixture
 def bad_db_stack():
     # Function-scoped factory. Spins up a fresh MariaDB sidecar, pre-populates
@@ -544,6 +608,7 @@ def test_nested_array_param_survives_restart(stack_persistent):
     ("/data/var/spool", "-d"),
     ("/data/media/files", "-d"),
     ("/data/media/images", "-d"),
+    ("/data/plugins", "-d"),
 ])
 def test_bootstrap_populated_data(stack, path, flag):
     r = _exec(stack["mtc"], "test", flag, path)
@@ -664,6 +729,52 @@ def test_admin_not_reseeded_on_restart(stack_persistent):
         f"users count changed across restart: {before} -> {after}; "
         "admin appears to have been reseeded"
     )
+
+
+# ---------------------------------------------------------------------------
+# Custom plugins (/data/plugins passthrough).
+# ---------------------------------------------------------------------------
+
+def _plugin_rows(db, bundle):
+    r = _exec(
+        db, "mariadb", "-uroot", "-ptest", "mautic", "-N", "-B",
+        "-e", f"SELECT COUNT(*) FROM plugins WHERE bundle = '{bundle}'", check=True,
+    )
+    return int(r.stdout.strip())
+
+
+def test_custom_plugin_linked(stack_plugin):
+    r = _exec(stack_plugin["mtc"], "readlink", PLUGIN_LINK)
+    assert r.stdout.strip() == f"/data/plugins/{PLUGIN_NAME}", (
+        f"expected {PLUGIN_LINK} -> /data/plugins/{PLUGIN_NAME}, got {r.stdout!r}"
+    )
+
+
+def test_custom_plugin_registered(stack_plugin):
+    assert _plugin_rows(stack_plugin["db"], PLUGIN_NAME) == 1, (
+        "mautic:plugins:reload did not register the custom plugin"
+    )
+
+
+def test_bundled_plugins_still_present(stack_plugin):
+    r = _exec(stack_plugin["mtc"], "test", "-d",
+              "/var/www/html/docroot/plugins/MauticFocusBundle")
+    assert r.returncode == 0
+
+
+def test_removed_plugin_link_pruned(stack_plugin):
+    # Mutates the stack, so it runs last among the plugin tests.
+    mtc = stack_plugin["mtc"]
+    _exec(mtc, "rm", "-rf", f"/data/plugins/{PLUGIN_NAME}", check=True)
+    _sh("docker", "restart", mtc)
+    port = _host_port(mtc, "8080")
+    try:
+        _wait_http_200(f"http://127.0.0.1:{port}{LOGIN_PATH}", READY_DEADLINE_S)
+    except RuntimeError:
+        _dump_logs(mtc)
+        raise
+    r = _exec(mtc, "sh", "-c", f"test -e {PLUGIN_LINK} || test -L {PLUGIN_LINK}")
+    assert r.returncode != 0, f"stale plugin link {PLUGIN_LINK} survived restart"
 
 
 # ---------------------------------------------------------------------------

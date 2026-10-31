@@ -58,9 +58,40 @@ mkdir -p \
     /data/var/tmp \
     /data/var/spool \
     /data/media/files \
-    /data/media/images
+    /data/media/images \
+    /data/plugins
 
 chown -R www-data:www-data /data
+
+# ---------------------------------------------------------------------------
+# Custom plugins. docroot/plugins is baked into the image, so user plugins
+# live in /data/plugins and are symlinked in; the kernel's plugin Finder
+# follows links. Prune links first so plugins removed from /data drop out
+# across a `docker restart` (container fs persists). Runs before any
+# bin/console call so the first kernel boot already sees them.
+# ---------------------------------------------------------------------------
+PLUGIN_DIR=${APP_DIR}/docroot/plugins
+for link in "$PLUGIN_DIR"/*; do
+    [ -L "$link" ] || continue
+    case "$(readlink "$link")" in
+        /data/plugins/*) rm -f "$link" ;;
+    esac
+done
+for src in /data/plugins/*/; do
+    [ -d "$src" ] || continue
+    name=$(basename "$src")
+    case "$name" in
+        *Bundle) ;;
+        *) log "WARN: /data/plugins/$name: name must end in 'Bundle'; skipping"; continue ;;
+    esac
+    if [ -e "$PLUGIN_DIR/$name" ] || [ -L "$PLUGIN_DIR/$name" ]; then
+        log "WARN: /data/plugins/$name collides with a bundled plugin; skipping"
+        continue
+    fi
+    ln -s "/data/plugins/$name" "$PLUGIN_DIR/$name"
+    log "linked custom plugin $name"
+done
+unset link src name
 
 # ---------------------------------------------------------------------------
 # Render local.php from env. The helper preserves secret_key if it already
@@ -118,7 +149,9 @@ php -r "include('$LOCAL_PHP'); exit(!empty(\$parameters['db_driver']) && !empty(
 schema_ok=1
 ( cd "$APP_DIR" && mautic-db-guard installed ) >/dev/null 2>&1 || schema_ok=0
 
+installed=0
 if [ "$config_ok" = 1 ] && [ "$schema_ok" = 1 ]; then
+    installed=1
     log "Mautic already installed; running migrations"
     ( cd "$APP_DIR" && php bin/console doctrine:migrations:sync-metadata-storage -n --env=prod --no-debug ) >&2 \
         || die "doctrine:migrations:sync-metadata-storage failed"
@@ -164,6 +197,7 @@ elif [ -n "${ADMIN_EMAIL:-}" ] && [ -n "${ADMIN_PASSWORD:-}" ]; then
         || die "post-install mautic-local-php-render failed"
     chown www-data:www-data "$LOCAL_PHP"
     chmod 0640 "$LOCAL_PHP"
+    installed=1
 else
     log "WARN: Mautic not installed and ADMIN_EMAIL/ADMIN_PASSWORD not set;"
     log "      skipping install. Finish setup via $MAUTIC_URL/installer."
@@ -174,5 +208,12 @@ fi
 # ---------------------------------------------------------------------------
 ( cd "$APP_DIR" && php bin/console cache:clear --env=prod --no-debug ) >&2 \
     || log "WARN: cache:clear returned non-zero"
+
+# Register new/updated plugins in the DB. After cache:clear so the rebuilt
+# container includes bundles linked above.
+if [ "$installed" = 1 ]; then
+    ( cd "$APP_DIR" && php bin/console mautic:plugins:reload --env=prod --no-debug ) >&2 \
+        || log "WARN: mautic:plugins:reload returned non-zero"
+fi
 
 log "bootstrap complete"

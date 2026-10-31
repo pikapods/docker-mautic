@@ -58,7 +58,7 @@ boot, the bootstrap logs a warning and skips install — finish setup via
 
 | Path | Purpose | Persistent |
 |---|---|---|
-| `/data` | All user state (config, logs, uploads) | Yes |
+| `/data` | All user state (config, logs, uploads, custom plugins) | Yes |
 | `/var/www/html` | App code | No — baked into image |
 
 `/data` layout:
@@ -68,12 +68,48 @@ boot, the bootstrap logs a warning and skips install — finish setup via
 ├── config/local.php   # rendered each boot, preserves secret_key
 ├── var/logs/          # symlinked from /var/www/html/var/logs
 ├── media/files/       # user uploads
-└── media/images/      # generated/uploaded images
+├── media/images/      # generated/uploaded images
+└── plugins/           # custom plugins, see "Custom plugins"
 ```
 
 The `var/cache/`, `var/tmp/`, and `var/spool/` directories stay inside
 the image and are rebuilt on demand. Bind-mount them yourself if you
 need spool persistence.
+
+## Custom plugins
+
+`/var/www/html` is baked into the image, so a plugin copied into
+`docroot/plugins/` is lost when the container is recreated. Don't mount
+over `docroot/plugins/` either: that hides the bundled plugins (GrapesJS
+builder, Focus, CRM, …).
+
+Put custom plugins in `/data/plugins/` instead. On every boot the bootstrap
+symlinks each `/data/plugins/<Name>Bundle/` into `docroot/plugins/`, clears
+the cache and runs `mautic:plugins:reload`. Removing a plugin from
+`/data/plugins/` drops its link on the next boot.
+
+```sh
+# named volume (compose.yaml default)
+docker compose cp ./MyCustomBundle mautic:/data/plugins/
+docker compose restart mautic
+```
+
+With a bind mount, copy the plugin into the host directory instead, owned
+by `82:82` (see "User & permissions"). Then enable and configure it under
+Settings → Plugins.
+
+Limitations:
+
+- The directory name must match the bundle class: `MyCustomBundle/` holding
+  `MyCustomBundle.php` with class `MauticPlugin\MyCustomBundle\MyCustomBundle`.
+  Names not ending in `Bundle` are skipped with a warning.
+- Self-contained plugins only. Plugins that need extra Composer dependencies
+  are not supported, and plugins installed through the in-app Marketplace
+  (Composer) land in the image tree and are lost on recreate.
+- A plugin with the same name as a bundled one is skipped with a warning; it
+  cannot override the bundled version.
+- Plugin code runs with full application privileges. Install only code you
+  trust.
 
 ## Bootstrap behaviour
 
@@ -82,7 +118,8 @@ services. Phases:
 
 1. Reject if `/data` is not writable or `/data/config` is a regular file.
 2. Validate required env vars.
-3. Create `/data` tree, chown to `www-data`.
+3. Create `/data` tree, chown to `www-data`. Symlink custom plugins from
+   `/data/plugins/` into `docroot/plugins/`, pruning links to removed ones.
 4. Render `/data/config/local.php` from env. DB block + `site_url` are
    overwritten every boot. `secret_key` is preserved if already set;
    otherwise a 32-byte hex value is generated. `MAUTIC_PARAM_*` env vars
@@ -95,6 +132,8 @@ services. Phases:
    Otherwise, if `ADMIN_EMAIL`+`ADMIN_PASSWORD` are set: `mautic:install`.
    Otherwise: log warning, skip — finish setup via the web installer.
 8. `cache:clear` (best-effort).
+9. If installed: `mautic:plugins:reload` (best-effort) to register new or
+   updated plugins.
 
 Step 4 is a read-modify-write: every key already in `local.php` is read back
 and re-serialized, not just the ones listed above, so keys written by the
@@ -132,6 +171,6 @@ just work.
 
 ## Non-goals (this iteration)
 
-- Plugin/theme installation hooks beyond a passthrough directory.
+- Composer/Marketplace plugin installs and custom theme persistence.
 - Postgres support.
 - Version-migration / upgrade tooling.
