@@ -359,7 +359,7 @@ class TestCustomUidRebuild:
         build_args = {"WWW_DATA_UID": self.UID, "WWW_DATA_GID": self.GID}
         # CI may build a non-default Mautic version / digest-pinned base. Inherit
         # those args (when present) so the UID rebuild exercises the same artifact
-        # as the candidate, not the Dockerfile's default 7.1.1 + floating base.
+        # as the candidate, not the Dockerfile's default 7.2.2 + floating base.
         for key in ("MAUTIC_VERSION", "PHP_VERSION", "BASE_IMAGE", "BASE_DIGEST"):
             val = os.environ.get(key)
             if val:

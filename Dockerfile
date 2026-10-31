@@ -3,9 +3,9 @@
 #
 # Build:
 #   podman build \
-#     --build-arg MAUTIC_VERSION=7.1.1 \
+#     --build-arg MAUTIC_VERSION=7.2.2 \
 #     --build-arg PHP_VERSION=8.3 \
-#     -t ghcr.io/pikapods/docker-mautic:7.1.1 .
+#     -t ghcr.io/pikapods/docker-mautic:7.2.2 .
 #
 # CI also passes BASE_IMAGE (digest-pinned), BASE_DIGEST, IMAGE_REVISION,
 # GIT_SHA, and BUILD_DATE to populate OCI labels and pin the base. Local
@@ -33,7 +33,7 @@ USER root
 # Do NOT use floating constraints like '7.x-dev' or '^7.1' as the
 # default: build reproducibility depends on this being an exact tag
 # that composer resolves to the same artifact across builds.
-ARG MAUTIC_VERSION=7.1.1
+ARG MAUTIC_VERSION=7.2.2
 
 RUN apk add --no-cache git unzip nodejs npm curl \
     && install-php-extensions intl pdo_mysql mysqli zip bcmath sockets gd imap exif opcache iconv
@@ -97,7 +97,7 @@ RUN COMPOSER_ALLOW_SUPERUSER=1 COMPOSER_PROCESS_TIMEOUT=10000 \
 FROM ${BASE_IMAGE}
 
 ARG PHP_VERSION
-ARG MAUTIC_VERSION=7.1.1
+ARG MAUTIC_VERSION=7.2.2
 ARG IMAGE_REVISION=r1
 ARG BASE_DIGEST=
 ARG GIT_SHA=
