@@ -143,11 +143,16 @@ class TestImageFilesystem:
         ("/var/www/html/var/logs", "/data/var/logs"),
         ("/var/www/html/docroot/media/files", "/data/media/files"),
         ("/var/www/html/docroot/media/images", "/data/media/images"),
+        ("/var/www/html/docroot/themes", "/data/themes"),
     ])
     def test_data_symlinks(self, link, target):
         r = _run("readlink", link)
         assert r.returncode == 0, f"readlink {link} failed: {r.stderr}"
         assert r.stdout.strip() == target, f"{link} -> {r.stdout.strip()!r}, expected {target!r}"
+
+    def test_bundled_themes_relocated(self):
+        r = _run("test", "-f", "/var/www/html/themes.dist/blank/config.json")
+        assert r.returncode == 0, "bundled themes missing from themes.dist"
 
     def test_data_dir_owned_by_www_data(self):
         r = _run("stat", "-c", "%U:%G", "/data")

@@ -59,7 +59,36 @@ mkdir -p \
     /data/var/spool \
     /data/media/files \
     /data/media/images \
-    /data/plugins
+    /data/plugins \
+    /data/themes
+
+# ---------------------------------------------------------------------------
+# Bundled themes. docroot/themes -> /data/themes so theme-manager uploads
+# persist. Bundled themes ship in themes.dist and are (re)copied only when
+# the image's composer.lock changes. Names dropped from the image since the
+# last sync are pruned; anything else in /data/themes is user state.
+# ---------------------------------------------------------------------------
+THEMES_DIST=${APP_DIR}/themes.dist
+stamp=$(sha256sum "$APP_DIR/composer.lock" | cut -d' ' -f1)
+if [ "$(cat /data/themes/.bundled-stamp 2>/dev/null || true)" != "$stamp" ]; then
+    log "syncing bundled themes into /data/themes"
+    if [ -f /data/themes/.bundled-list ]; then
+        while IFS= read -r name; do
+            if [ -n "$name" ] && [ ! -e "$THEMES_DIST/$name" ]; then
+                rm -rf "/data/themes/$name"
+            fi
+        done < /data/themes/.bundled-list
+    fi
+    rm -f /data/themes/.bundled-stamp
+    ls -A "$THEMES_DIST" > /data/themes/.bundled-list.new
+    while IFS= read -r name; do
+        rm -rf "/data/themes/$name"
+        cp -a "$THEMES_DIST/$name" "/data/themes/$name"
+    done < /data/themes/.bundled-list.new
+    mv /data/themes/.bundled-list.new /data/themes/.bundled-list
+    printf '%s\n' "$stamp" > /data/themes/.bundled-stamp
+fi
+unset stamp name
 
 chown -R www-data:www-data /data
 

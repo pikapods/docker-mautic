@@ -146,15 +146,19 @@ COPY --from=builder --chown=www-data:www-data /build /var/www/html
 # All mutable state under /data with symlinks back into the app tree.
 # Targets do not resolve until /data is populated by the bootstrap —
 # fine, the bootstrap mkdir -p's them on first boot.
+# Bundled themes move to themes.dist (outside the webroot); the bootstrap
+# seeds them into /data/themes so uploads via the theme manager persist.
 RUN ln -s docroot /var/www/html/public \
     && rm -rf /var/www/html/config \
               /var/www/html/var/logs \
               /var/www/html/docroot/media/files \
               /var/www/html/docroot/media/images \
+    && mv /var/www/html/docroot/themes /var/www/html/themes.dist \
     && ln -s /data/config /var/www/html/config \
     && ln -s /data/var/logs /var/www/html/var/logs \
     && ln -s /data/media/files /var/www/html/docroot/media/files \
     && ln -s /data/media/images /var/www/html/docroot/media/images \
+    && ln -s /data/themes /var/www/html/docroot/themes \
     && mkdir -p /data \
     && chown www-data:www-data /data \
     && chown -R www-data:www-data /var/www/html

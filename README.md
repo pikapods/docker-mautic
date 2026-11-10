@@ -58,7 +58,7 @@ boot, the bootstrap logs a warning and skips install — finish setup via
 
 | Path | Purpose | Persistent |
 |---|---|---|
-| `/data` | All user state (config, logs, uploads, custom plugins) | Yes |
+| `/data` | All user state (config, logs, uploads, custom plugins, themes) | Yes |
 | `/var/www/html` | App code | No — baked into image |
 
 `/data` layout:
@@ -69,7 +69,8 @@ boot, the bootstrap logs a warning and skips install — finish setup via
 ├── var/logs/          # symlinked from /var/www/html/var/logs
 ├── media/files/       # user uploads
 ├── media/images/      # generated/uploaded images
-└── plugins/           # custom plugins, see "Custom plugins"
+├── plugins/           # custom plugins, see "Custom plugins"
+└── themes/            # bundled + uploaded themes, see "Themes"
 ```
 
 The `var/cache/`, `var/tmp/`, and `var/spool/` directories stay inside
@@ -111,6 +112,25 @@ Limitations:
 - Plugin code runs with full application privileges. Install only code you
   trust.
 
+## Themes
+
+`docroot/themes/` is a symlink to `/data/themes/`, so themes uploaded or
+copied through Settings → Themes persist across container recreates.
+
+The image ships its bundled themes in `/var/www/html/themes.dist/`. The
+bootstrap copies them into `/data/themes/` on first boot and again whenever
+the image's `composer.lock` changes (i.e. on upgrade). Bundled themes that
+an upgrade drops are removed. Everything else in `/data/themes/` is left
+alone.
+
+Limitations:
+
+- On upgrade, bundled themes are overwritten. In-place edits to a bundled
+  theme are lost, and so is a custom theme that has the same directory name
+  as a bundled one. To customize a bundled theme, copy it first.
+- Themes uploaded before this layout existed lived in the image tree and
+  were already lost on recreate. Nothing is migrated.
+
 ## Bootstrap behaviour
 
 The `20-mautic-bootstrap.sh` hook runs once before s6 starts the long-run
@@ -118,7 +138,8 @@ services. Phases:
 
 1. Reject if `/data` is not writable or `/data/config` is a regular file.
 2. Validate required env vars.
-3. Create `/data` tree, chown to `www-data`. Symlink custom plugins from
+3. Create `/data` tree. Sync bundled themes into `/data/themes/` if the
+   image changed. Chown to `www-data`. Symlink custom plugins from
    `/data/plugins/` into `docroot/plugins/`, pruning links to removed ones.
 4. Render `/data/config/local.php` from env. DB block + `site_url` are
    overwritten every boot. `secret_key` is preserved if already set;
@@ -171,6 +192,6 @@ just work.
 
 ## Non-goals (this iteration)
 
-- Composer/Marketplace plugin installs and custom theme persistence.
+- Composer/Marketplace plugin installs.
 - Postgres support.
 - Version-migration / upgrade tooling.

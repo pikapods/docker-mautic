@@ -371,6 +371,7 @@ def stack_workers_off():
 
 
 PLUGIN_NAME = "SmokeTestBundle"
+THEME_NAME = "smoketheme"
 PLUGIN_LINK = f"/var/www/html/docroot/plugins/{PLUGIN_NAME}"
 
 # Minimal self-contained plugin, same shape as the bundled MauticZapierBundle.
@@ -388,6 +389,10 @@ cat > "$d/Config/config.php" <<'PHP'
 <?php
 return ['name' => 'Smoke Test', 'description' => 'test', 'version' => '1.0', 'author' => 'test'];
 PHP
+t=/data/themes/{THEME_NAME}
+mkdir -p "$t/html"
+echo '{{"name":"Smoke Theme","author":"test","authorUrl":"","features":["email"]}}' > "$t/config.json"
+echo '{{{{ message }}}}' > "$t/html/message.html.twig"
 """
 
 
@@ -609,6 +614,9 @@ def test_nested_array_param_survives_restart(stack_persistent):
     ("/data/media/files", "-d"),
     ("/data/media/images", "-d"),
     ("/data/plugins", "-d"),
+    ("/data/themes", "-d"),
+    ("/data/themes/blank/config.json", "-f"),
+    ("/data/themes/.bundled-stamp", "-f"),
 ])
 def test_bootstrap_populated_data(stack, path, flag):
     r = _exec(stack["mtc"], "test", flag, path)
@@ -775,6 +783,39 @@ def test_removed_plugin_link_pruned(stack_plugin):
         raise
     r = _exec(mtc, "sh", "-c", f"test -e {PLUGIN_LINK} || test -L {PLUGIN_LINK}")
     assert r.returncode != 0, f"stale plugin link {PLUGIN_LINK} survived restart"
+
+
+# ---------------------------------------------------------------------------
+# Themes (/data/themes, seeded from themes.dist).
+# ---------------------------------------------------------------------------
+
+def test_bundled_theme_served(stack):
+    status, _ = _get_status_body(stack["port"], "/themes/blank/thumbnail.png")
+    assert status == 200, f"bundled theme asset not served via symlink, got {status}"
+
+
+def test_user_theme_survives_boot(stack_plugin):
+    r = _exec(stack_plugin["mtc"], "test", "-f", f"/data/themes/{THEME_NAME}/config.json")
+    assert r.returncode == 0, "seeded user theme was removed by the bundled-theme sync"
+
+
+def test_bundled_themes_resynced_on_stamp_change(stack_plugin):
+    # Mutates the stack, so it runs after the other stack_plugin tests.
+    mtc = stack_plugin["mtc"]
+    _exec(mtc, "rm", "-rf", "/data/themes/blank", "/data/themes/.bundled-stamp", check=True)
+    _sh("docker", "restart", mtc)
+    port = _host_port(mtc, "8080")
+    try:
+        _wait_http_200(f"http://127.0.0.1:{port}{LOGIN_PATH}", READY_DEADLINE_S)
+    except RuntimeError:
+        _dump_logs(mtc)
+        raise
+    assert _exec(mtc, "test", "-f", "/data/themes/blank/config.json").returncode == 0, (
+        "bundled theme not restored after stamp removal"
+    )
+    assert _exec(mtc, "test", "-f", f"/data/themes/{THEME_NAME}/config.json").returncode == 0, (
+        "user theme lost during bundled-theme resync"
+    )
 
 
 # ---------------------------------------------------------------------------
