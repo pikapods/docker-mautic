@@ -229,6 +229,17 @@ class TestImageFilesystem:
         )
         assert r.returncode == 0, f"{svc} not registered in user-bundles.d/user"
 
+    @pytest.mark.parametrize("cmd", [
+        "mautic:segments:update",
+        "mautic:campaigns:update",
+        "mautic:campaigns:trigger",
+        "mautic:broadcasts:send",
+    ])
+    def test_scheduler_dispatches_job(self, cmd):
+        r = _run("grep", "-q", f"bin/console {cmd} ",
+                 "/etc/s6-overlay/s6-rc.d/mautic-scheduler/run")
+        assert r.returncode == 0, f"scheduler does not dispatch {cmd}"
+
     def test_no_legacy_user_bundle_dir(self):
         # s6-overlay >= 3.2.3 switches to compat mode if s6-rc.d/user exists,
         # ignoring user-bundles.d and failing to write its type file as www-data.
